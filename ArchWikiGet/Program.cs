@@ -1,9 +1,19 @@
 ﻿/*
  * Main behavior:
  * There will be one class for each major step in the process or each major extension to the functionality.
- * For example, there must be
+ * These are all of the classes (for now) and what they do.
+ *  - Downloader -> downloads pages to memory
+ *  - Sanitizer  -> sanitizes a page
+ *  - Searcher   -> leverages downloader to grab the results of a search query and then looks for results.
+ *  - Indexer    -> looks for config files to find information about the database and then puts DLd wiki pages in the DB.
+ *  - Recurser   -> handles recursive downloading and multithreading for the purpose of recursive downloading.
  */
 
+
+using System.Linq.Expressions;
+using System.Net;
+using HtmlAgilityPack;
+using Html2Markdown;
 
 namespace ArchWikiGet;
 
@@ -12,11 +22,11 @@ class Program
     //environment variables for command-line args, along with their default values.
     //all booleans start with `Do...`
     //controlled by -p or --raw
-    private static bool DoSanitize = true; //whether to sanitize the page. -p or --raw reverses this.
+    public static bool DoSanitize = true; //whether to sanitize the page. -p or --raw reverses this.
     //controlled by -f or --force
     private static bool DoForce = false; //whether to process any page that is received
     //controlled by -t or --title
-    private static bool DoTreatAsTitle = false; //whether to process the argument as an article title rather than a page slug
+    public static bool DoTreatAsTitle = false; //whether to process the argument as an article title rather than a page slug
     //controlled by -s or --search
     private static bool DoSearchMode = false; //whether to process the argument as a search query and just return search results
     //controlled by -d or --database
@@ -36,15 +46,102 @@ class Program
     //controlled by -h or --help
     private static bool DoHelpMode = false; //if true, print help page and exit
     //controlled by -u or --url
-    private static bool DoTreatAsURL = false; //whether to treat args as full URLs
+    public static bool DoTreatAsURL = false; //whether to treat args as full URLs
     //controlled by -m or --markdown
     private static bool DoMarkdown = false; //whether to output as markdown instead of HTML.
     
     
-    public static void Main(string[] args)
+    public static async Task<int> Main(string[] args)
     {
-        //step zero: process flags
+        if (args.GetLength(0) == 0)
+        {
+            await Console.Error.WriteLineAsync("fatal: expected an argument. Try \"awget -h\".");
+            Environment.Exit(1);
+        }
+        //first, process arguments
         ProcessFlags(args);
+        
+        //then, prepare the error-handler
+
+        try
+        {
+            return await DoProcess(); //start the thingy
+        }
+        catch (Exception exception)
+        {
+            // first, print out the exception's message in red to stderr
+            ConsoleColor originalColor = Console.ForegroundColor;
+            Console.ForegroundColor = ConsoleColor.Red;
+            await Console.Error.WriteLineAsync("\nfatal: " + exception.Message);
+            Console.ForegroundColor = originalColor;
+
+            switch (exception)
+            {
+                // give different messages based on exception type
+                case FileNotFoundException or DirectoryNotFoundException:
+                    //in this case, most likely, the file write operations failed somehow.
+                    await Console.Error.WriteLineAsync(
+                        "hint: the requested file or directory probably does not exist or you do not have permission to access it.");
+                    Environment.Exit(1);
+                    break;
+                case UnauthorizedAccessException:
+                    //in this case, the user does not have permission to write to the requested file
+                    await Console.Error.WriteLineAsync(
+                        "hint: you probably do not have permission to access the requested file or directory.");
+                    Environment.Exit(1);
+                    break;
+                case WebException:
+                    //in this case, the connection failed; this is most likely because there is no internet access.
+                    await Console.Error.WriteLineAsync(
+                        "hint: this process probably does not have access to the internet.");
+                    Environment.Exit(1);
+                    break;
+                case HttpRequestException requestException:
+                    //in this case, the request returned an error code.
+                    await Console.Error.WriteLineAsync(
+                        "hint: the error may be described by the error code: " +
+                        (requestException.StatusCode.HasValue
+                            ? (int)requestException.StatusCode!
+                            : "no error code could be found."));
+                    Environment.Exit(1);
+                    break;
+                default:
+                    //an unknown exception occured!!! let's fix it
+                    await Console.Error.WriteLineAsync("hint: an unknown exception occured during execution.\n" +
+                                                       "      This is a development build, so the stack trace will be printed below.\n");
+                    await Console.Error.WriteLineAsync(exception.StackTrace);
+                    await Console.Error.WriteLineAsync("thrown by method: " + exception.TargetSite);
+                    break;
+            }
+
+            await Console.Error.WriteLineAsync("the operation failed. If you think this is a fault of the application, consider opening an issue on our github: https://github.com/PilotGuy772/awget");
+
+        }
+
+        return 0;
+    }
+
+    private static async Task<int> DoProcess()
+    {
+        if (DoWriteToFile)
+        {
+            if (Arguments.Count <= 1 && File.Exists(FilePath))
+            {
+                //if the file exists, prompt the user so he does not lose any precious data
+                Console.WriteLine("The file \"" + FilePath + "\" already exists. Overwrite it? (Y/n) ");
+                string input = Console.ReadLine() ?? "";
+                if (input is "n" or "no")
+                {
+                    Environment.Exit(0);
+                }
+                else
+                {
+                    File.Create(FilePath);
+                }
+            }
+        }
+            
+        
         //step one: handle behavior changing arguments.
         //This includes: help, search, recursive
         if (DoHelpMode)
@@ -52,12 +149,55 @@ class Program
             PrintHelp();
             Environment.Exit(0);
         }
+        
+        //step two: regular behaviors: downloading
+        var downloaders = Arguments.Select(arg => new Downloader(arg)).ToList();
+        foreach (Downloader dl in downloaders)
+        {
+            await dl.DownloadPageAsync(); //download pages one-by-one
+        }
+        
+        //step three: regular behaviors: sanitizing
+        string final;
+        if (DoSanitize)
+        {
+            
+        }
+        
+        //step four: Modifications to output. 
+        //this includes: write to file, markdown mode
+        if (DoWriteToFile)
+        {
+            if (Arguments.Count > 1)
+            {
+                for (var i = 0; i < downloaders.Count; i++)
+                {
+                    var converter = new Converter();
+                    await File.WriteAllTextAsync(FilePath + "/" + Arguments[i], DoMarkdown ? 
+                        converter.Convert(downloaders[i].SavedDocument.DocumentNode.InnerHtml) : 
+                        downloaders[i].SavedDocument.DocumentNode.InnerHtml);
+                }
+            }
+            else
+            {
+                var converter = new Converter();
+                await File.WriteAllTextAsync(FilePath, downloaders[0].SavedDocument.DocumentNode.InnerHtml);
+            }
+        }
+        else //otherwise, this should be sent straight to STDOUT
+        {
+            Console.Write("\n");
+            Console.Write(downloaders[0].SavedDocument.DocumentNode.InnerHtml);
+        }
+
+
+        return 0;
     }
 
-    private static void ProcessFlags(string[] args)
+    private static void ProcessFlags(IReadOnlyList<string> args)
     {
         //iterate through args
-        for (int i = 0; i < args.Length; i++)
+        for (var i = 0; i < args.Count; i++)
         {
             //check if the arg is a flag
             if (args[i].StartsWith("-"))
@@ -181,6 +321,11 @@ class Program
                     if (tooManyValues)
                         i++; //skip the next arg bcz it's already processed
                 }
+                
+            }
+            else
+            {
+                Arguments.Add(args[i]);
             }
         }
     }
@@ -202,7 +347,9 @@ class Program
                           "   -l  --little    Attempts to use as little memory as possible when downloading and processing\n" +
                           "                   pages. Useful with -r on memory limited systems.\n" +
                           "   -m  --markdown  Output markdown instead of HTML.\n" +
-                          "   -o  --output    Send the output to the requested file instead of stdout.\n" +
+                          "   -o  --output    Send the output to the requested file instead of stdout. If this is used with\n" +
+                          "                   downloading multiple pages, the requested file path is treated as a directory\n" +
+                          "                   and the pages are individually placed in files named after their slugs.\n" +
                           "   -p  --raw       Skip the HTML sanitization step.\n" +
                           "   -r  --recursive Recursively download all pages that are directly linked to by downloaded\n" +
                           "                   pages. Specify the layers of depth to search. A depth argument below 1\n" +

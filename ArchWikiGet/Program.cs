@@ -21,6 +21,8 @@ class Program
 {
     //environment variables for command-line args, along with their default values.
     //all booleans start with `Do...`
+    //set at the time of initial download
+    public static DateTime RetrievalTime;
     //controlled by -p or --raw
     public static bool DoSanitize = true; //whether to sanitize the page. -p or --raw reverses this.
     //controlled by -f or --force
@@ -48,7 +50,7 @@ class Program
     //controlled by -u or --url
     public static bool DoTreatAsURL = false; //whether to treat args as full URLs
     //controlled by -m or --markdown
-    private static bool DoMarkdown = false; //whether to output as markdown instead of HTML.
+    public static bool DoMarkdown = false; //whether to output as markdown instead of HTML.
     
     
     public static async Task<int> Main(string[] args)
@@ -65,6 +67,9 @@ class Program
 
         try
         {
+            //set the retrieval time
+            RetrievalTime = DateTime.Today;
+            //and GO!
             return await DoProcess(); //start the thingy
         }
         catch (Exception exception)
@@ -99,10 +104,7 @@ class Program
                 case HttpRequestException requestException:
                     //in this case, the request returned an error code.
                     await Console.Error.WriteLineAsync(
-                        "hint: the error may be described by the error code: " +
-                        (requestException.StatusCode.HasValue
-                            ? (int)requestException.StatusCode!
-                            : "no error code could be found."));
+                        "hint: the error may be described by the error code.");
                     Environment.Exit(1);
                     break;
                 default:
@@ -158,10 +160,27 @@ class Program
         }
         
         //step three: regular behaviors: sanitizing
-        string final;
+        List<string> final = new();
         if (DoSanitize)
         {
+            List<Sanitizer> sanitizers = new();
+            List<Task> tasks = new();
+            for (int i = 0; i < downloaders.Count; i++)
+            {
+                sanitizers.Add(new Sanitizer(downloaders[i].SavedDocument));
+                tasks.Add(sanitizers[i].SanitizeAsync());
+            }
+
+            foreach (Task op in tasks)
+            {
+                await op; //await the values once all of the ops are started
+            }
             
+            final.AddRange(sanitizers.Select(sanitizer => sanitizer.Result));
+        }
+        else
+        {
+            final.AddRange(downloaders.Select(dl => dl.SavedDocument.DocumentNode.InnerHtml));
         }
         
         //step four: Modifications to output. 
@@ -170,24 +189,24 @@ class Program
         {
             if (Arguments.Count > 1)
             {
-                for (var i = 0; i < downloaders.Count; i++)
+                for (var i = 0; i < final.Count; i++)
                 {
                     var converter = new Converter();
                     await File.WriteAllTextAsync(FilePath + "/" + Arguments[i], DoMarkdown ? 
-                        converter.Convert(downloaders[i].SavedDocument.DocumentNode.InnerHtml) : 
-                        downloaders[i].SavedDocument.DocumentNode.InnerHtml);
+                        converter.Convert(final[i]) : 
+                        final[i]);
                 }
             }
             else
             {
                 var converter = new Converter();
-                await File.WriteAllTextAsync(FilePath, downloaders[0].SavedDocument.DocumentNode.InnerHtml);
+                await File.WriteAllTextAsync(FilePath, final[0]);
             }
         }
         else //otherwise, this should be sent straight to STDOUT
         {
             Console.Write("\n");
-            Console.Write(downloaders[0].SavedDocument.DocumentNode.InnerHtml);
+            Console.Write(final[0]);
         }
 
 

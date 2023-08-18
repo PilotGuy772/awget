@@ -31,21 +31,6 @@ public class Downloader
         
     }
 
-    public void DownloadPage()
-    {
-        using var client = new HttpClient();
-        HttpResponseMessage response = client.GetAsync(_url).Result;
-
-        if (!response.IsSuccessStatusCode)
-            throw new HttpRequestException("The http request returned failure error code.", null, response.StatusCode);
-        
-        var document = new HtmlDocument();
-        string content = response.Content.ReadAsStringAsync().Result;
-        document.LoadHtml(content);
-        SavedDocument = document;
-
-    }
-
     public async Task DownloadPageAsync()
     {
         using var client = new HttpClient();

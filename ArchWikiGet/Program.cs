@@ -10,15 +10,14 @@
  */
 
 
-using System.Linq.Expressions;
 using System.Net;
-using HtmlAgilityPack;
-using Html2Markdown;
-
 namespace ArchWikiGet;
 
-class Program
+internal static class Program
 {
+    //build version
+    public const string VERSION = "dev-prealpha-v0.0.2";
+    
     //environment variables for command-line args, along with their default values.
     //all booleans start with `Do...`
     //set at the time of initial download
@@ -36,15 +35,15 @@ class Program
     //controlled by -r or --recursive
     private static bool DoRecursion = false; //whether to recursively download page dependencies
     //controlled by the value that follows the -r flag
-    private static int  RecursionLayers = 0; //how many layers to get page links. 0 indicates that all deps should be downloaded.
+    public static int  RecursionLayers = 0; //how many layers to get page links. 0 indicates that all deps should be downloaded.
     //controlled by -o or --output
-    private static bool DoWriteToFile = false; //whether to write to a file
+    public static bool DoWriteToFile = false; //whether to write to a file
     //controlled by the value that follows -o
-    private static string FilePath = "./output"; //where to write the downloaded page, if applicable.
+    public static string FilePath = "./output"; //where to write the downloaded page, if applicable.
     //controlled by the flag -l or --little
     private static bool DoTinyMode = false; //whether to be extremely strict with memory (i.e. keep only ~five pages in memory at a time)
     //controlled by the only plain argument that doesn't follow a flag
-    private static List<string> Arguments = new(); //which wiki page(s) to download
+    public static List<string> Arguments = new(); //which wiki page(s) to download
     //controlled by -h or --help
     private static bool DoHelpMode = false; //if true, print help page and exit
     //controlled by -u or --url
@@ -82,7 +81,7 @@ class Program
 
             switch (exception)
             {
-                // give different messages based on exception type
+                /*// give different messages based on exception type
                 case FileNotFoundException or DirectoryNotFoundException:
                     //in this case, most likely, the file write operations failed somehow.
                     await Console.Error.WriteLineAsync(
@@ -106,7 +105,7 @@ class Program
                     await Console.Error.WriteLineAsync(
                         "hint: the error may be described by the error code.");
                     Environment.Exit(1);
-                    break;
+                    break;*/
                 default:
                     //an unknown exception occured!!! let's fix it
                     await Console.Error.WriteLineAsync("hint: an unknown exception occured during execution.\n" +
@@ -130,15 +129,16 @@ class Program
             if (Arguments.Count <= 1 && File.Exists(FilePath))
             {
                 //if the file exists, prompt the user so he does not lose any precious data
-                Console.WriteLine("The file \"" + FilePath + "\" already exists. Overwrite it? (Y/n) ");
+                Console.WriteLine("The file \"" + FilePath + "\" already exists. Overwrite it? [y/N] ");
                 string input = Console.ReadLine() ?? "";
-                if (input is "n" or "no")
+                if (input.ToLower() == "y" || input.ToLower() == "yes")
                 {
-                    Environment.Exit(0);
+                    File.Create(FilePath);
                 }
                 else
                 {
-                    File.Create(FilePath);
+                    Console.WriteLine("aborting. Nothing was downloaded.");
+                    Environment.Exit(0);
                 }
             }
         }
@@ -149,6 +149,48 @@ class Program
         if (DoHelpMode)
         {
             PrintHelp();
+            Environment.Exit(0);
+        }
+
+        if (DoRecursion)
+        {
+            //before starting recursion, we must download the first pages.
+            //this is because we need to know what pages to download.
+            //we will also need to sanitize them.
+            var dLs = Arguments.Select(arg => new Downloader(arg)).ToList();
+            List<Task> tasks = new();
+            tasks.AddRange(dLs.Select(downloader => downloader.DownloadPageAsync()));
+            foreach (Task task in tasks)
+            {
+                await task;
+            }
+            
+            var sanitizers = dLs.Select(dl => new Sanitizer(dl.SavedDocument)).ToList();
+            tasks.Clear();
+            tasks.AddRange(sanitizers.Select(sanitizer => sanitizer.SanitizeAsync()));
+            foreach (Task task in tasks)
+            {
+                await task;
+            }
+            
+            //finally, we must save them to the disk.
+            var savers = sanitizers.Select(sanitizer => new Saver(sanitizer.Result)).ToList();
+            tasks.Clear();
+            tasks.AddRange(savers.Select(saver => saver.SaveAsync(FilePath + "/" + Arguments[savers.IndexOf(saver)] +
+                                                                  (DoMarkdown ? ".md" : ".html"))));
+            foreach (Task task in tasks)
+            {
+                await task;
+            }
+            
+            //now everything is saved and we can start the recursion using sanitizer.Result
+            tasks.Clear();
+            tasks.AddRange(sanitizers.Select(sanitizer => Recursion.RecurseAsync(sanitizer.Result, 1)));
+            foreach (Task task in tasks)
+            {
+                await task;
+            }
+
             Environment.Exit(0);
         }
         
@@ -184,22 +226,30 @@ class Program
         }
         
         //step four: Modifications to output. 
-        //this includes: write to file, markdown mode
+        //this includes: write to file
         if (DoWriteToFile)
         {
             if (Arguments.Count > 1)
             {
+                //initialize savers
+                
                 for (var i = 0; i < final.Count; i++)
                 {
-                    var converter = new Converter();
-                    await File.WriteAllTextAsync(FilePath + "/" + Arguments[i], DoMarkdown ? 
-                        converter.Convert(final[i]) : 
-                        final[i]);
+                    if (DoMarkdown)
+                    {
+                        Saver saver = new(final[i]);
+                        await saver.SaveAsync(FilePath + "/" + Arguments[i] + ".md");
+                    }
+                    else
+                    {
+                        Saver saver = new(final[i]);
+                        await saver.SaveAsync(FilePath + "/" + Arguments[i] + ".html");
+                    }
                 }
+                
             }
             else
             {
-                var converter = new Converter();
                 await File.WriteAllTextAsync(FilePath, final[0]);
             }
         }
@@ -251,7 +301,7 @@ class Program
                         case "--output":
                             DoWriteToFile = true;
                             i++;
-                            FilePath = args[i];
+                            FilePath = args[i].EndsWith("/") ? args[i].Substring(0, args[i].Length - 1) : args[i];
                             break;
                         case "--little":
                             DoTinyMode = true;
@@ -315,7 +365,7 @@ class Program
 
                             tooManyValues = true;
                             DoWriteToFile = true;
-                            FilePath = args[i + 1];
+                            FilePath = args[i].EndsWith("/") ? args[i].Substring(0, args[i].Length - 1) : args[i];
                             break;
                         case 'l':
                             DoTinyMode = true;
@@ -365,7 +415,8 @@ class Program
                           "   -f  --force     Download and process the requested page no matter what is received.\n" +
                           "   -l  --little    Attempts to use as little memory as possible when downloading and processing\n" +
                           "                   pages. Useful with -r on memory limited systems.\n" +
-                          "   -m  --markdown  Output markdown instead of HTML.\n" +
+                          "   -m  --markdown  Output markdown instead of HTML. Be warned that Markdown support is in an early stage\n" +
+                          "                   and many options will not work as intended with Markdown." +
                           "   -o  --output    Send the output to the requested file instead of stdout. If this is used with\n" +
                           "                   downloading multiple pages, the requested file path is treated as a directory\n" +
                           "                   and the pages are individually placed in files named after their slugs.\n" +
@@ -383,6 +434,8 @@ class Program
                           "                         -> Duplicates are not downloaded. A list of pages that have already\n" +
                           "                            been downloaded is stored in memory. If -l is specified, the \n" +
                           "                            destination directory is checked for duplicates instead.\n" +
+                          "                         -> With recursive mode, the information is written to the console\n" +
+                          "                            about each page that is downloaded as it is downloaded." +
                           "   -s  --search    Use the Arch Wiki's search function to search for pages by\n" +
                           "                   keyword. This returns a summary of results, but does not download pages.\n" +
                           "   -t  --title     Treat input arguments as page titles instead of page slugs.\n" +
@@ -390,12 +443,12 @@ class Program
                           "\n" +
                           "Description:\n" +
                           "   This command-line tool downloads pages from the Arch Wiki, sanitizes them to remove elements\n" +
-                          "   such as the header, footer, and sidebar, and prints the resulting HTML to stdout. The above\n" +
+                          "   such as the header, navigation, and sidebar, and prints the resulting HTML to stdout. The above\n" +
                           "   options modify and extend this behavior. This utility also comes with a partner utility, wikidb,\n" +
                           "   which indexes local wiki pages from the Arch Wiki or any other source. This software is licensed\n" +
                           "   under the MIT license. You may view the source code for this software (and for wikidb) as well as\n" +
                           "   the full license over at https://github.com/PilotGuy772/awget .\n" +
-                          "Version: dev-prealpha-v0.0.1";
+                          $"Version: {VERSION}";
         
         Console.WriteLine(helpPage);
     }

@@ -106,6 +106,8 @@ public class Sanitizer
                 node.InnerHtml = CUSTOM_HEADER + $"{Program.RetrievalTime.Year}-{Program.RetrievalTime.Month}-{Program.RetrievalTime.Day}" + CUSTOM_HEADER_APPEND;
                 body.PrependChild(node);
             }
+            
+            //finally, return the result.
             result = _document.DocumentNode.InnerHtml;
         }
 
@@ -114,7 +116,17 @@ public class Sanitizer
         
         return Task.CompletedTask;
 
-        void Remove(string id) => _document.GetElementbyId(id).Remove();
+        void Remove(string id)
+        {
+            try
+            {
+                _document.GetElementbyId(id).Remove();
+            }
+            catch
+            {
+                //ignored
+            }
+        }
     }
     
     

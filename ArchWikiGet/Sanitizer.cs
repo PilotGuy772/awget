@@ -80,6 +80,13 @@ public class Sanitizer
             foreach(HtmlNode node in nodes)
                 node.Remove();
         }
+        //and images
+        nodes = _document.DocumentNode.SelectNodes("//script");
+        if (nodes != null)
+        {
+            foreach(HtmlNode node in nodes)
+                node.Remove();
+        }
         
         //now, convert to MD if necessary
         string result;

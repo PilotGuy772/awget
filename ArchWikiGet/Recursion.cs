@@ -42,6 +42,14 @@ public static class Recursion
         // 2. Filter the pages that have already been visited
         links = links.Where(link => !_visited.Contains(link)).ToList();
         
+        // also, for links that include an anchor, remove the anchor
+        links = links.Select(link => link.Contains('#') ? link[..link.IndexOf("#", StringComparison.Ordinal)] : link).ToList();
+        
+        //finally, remove links that reference pages that are already on the disk in the target directory
+        links = Program.DoWriteToFile 
+            ? links.Where(link => !File.Exists(Program.FilePath + "/" + link.Replace("/title/", "") + (Program.DoMarkdown ? ".md" : ".html"))).ToList() 
+            : links.Where(link => !File.Exists("./" + link.Replace("/title/", "") + (Program.DoMarkdown ? ".md" : ".html"))).ToList();
+        
         // 3. Add the remaining pages to the visited list
         _visited.AddRange(links);
         
@@ -73,8 +81,8 @@ public static class Recursion
         {
             for (var i = 0; i < links.Count; i++)
             {
-                await File.WriteAllTextAsync(Program.FilePath + "/" + links[i].Replace("/title/", "").Replace("/", "+") + (Program.DoMarkdown ? ".md" : ".html"), 
-                    sanitizers[i].Result);
+                Saver saver = new(sanitizers[i].Result);
+                await saver.SaveAsync(Program.FilePath + "/" + links[i].Replace("/title/", "") + (Program.DoMarkdown ? ".md" : ".html"));
             }
         }
         else
@@ -82,8 +90,8 @@ public static class Recursion
             //if the directory is not specified, save the files to the current directory
             for (var i = 0; i < links.Count; i++)
             {
-                await File.WriteAllTextAsync(links[i].Replace("/title/", "") + (Program.DoMarkdown ? ".md" : ".html"), 
-                    sanitizers[i].Result);
+                Saver saver = new(sanitizers[i].Result);
+                await saver.SaveAsync( "./" + links[i].Replace("/title/", "") + (Program.DoMarkdown ? ".md" : ".html"));
             }
         }
         
@@ -93,10 +101,8 @@ public static class Recursion
         // 9. For each sanitized page, initialize a new recursion process in a background task.
         for (var j = 0; j < links.Count; j++)
         {
-            var newDoc = new HtmlDocument();
-            newDoc.LoadHtml(sanitizers[j].Result);
-            Console.WriteLine($"Recursing into {links[j]}");
-            tasks.Add(RecurseAsync(newDoc.DocumentNode.InnerHtml, depth + 1));
+            Console.WriteLine($"Dowloading {links[j]}...");
+            tasks.Add(RecurseAsync(sanitizers[j].Result, depth + 1));
         }
         
         //wait for all background tasks to finish

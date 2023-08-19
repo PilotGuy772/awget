@@ -17,7 +17,14 @@ public class Saver
         //first, check if the file already exists
         if (!CheckForFile(path)) return;
         
-        //if it doesn't, create it
+        //make sure the directories exist along the way
+        // Extract the directory path from the file path
+        string directoryPath = Path.GetDirectoryName(path) ?? "";
+
+        // Create any missing directories in the path
+        Directory.CreateDirectory(directoryPath);
+        
+        //if the file doesn't exist, create it
         FileStream stream = File.Create(path);
         stream.Close();
         
